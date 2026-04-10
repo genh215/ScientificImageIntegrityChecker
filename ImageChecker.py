@@ -1,87 +1,197 @@
-import numpy as np
-import cv2
 import os
 import tkinter as tk
-from tkinter import filedialog, Scale, Label, Button, HORIZONTAL, Frame
-from PIL import Image, ImageTk
+from tkinter import filedialog, messagebox, ttk
 
-class SinWaveFilterApp(tk.Tk):
+import cv2
+import numpy as np
+from PIL import Image, ImageTk, ImageGrab
+
+
+def apply_filter(img: np.ndarray, periods: int) -> np.ndarray:
+    img = np.clip(img, 0, 255).astype(np.uint8)
+    img_normalized = img.astype(np.float32) / 255.0
+    img_filtered = np.sin(img_normalized * 2.0 * np.pi * float(periods)) * 0.5 + 0.5
+    return np.clip(img_filtered * 255.0, 0, 255).astype(np.uint8)
+
+
+class ImageCheckerApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Image Data Checker")
-        self.geometry("800x600")
+        self.title("Image Data Checker (Grayscale Comparison)")
+        self.geometry("1000x700")
 
         self.original_image = None
         self.filtered_image = None
-        self.preview_image = None
-        self.file_path = None
+        self.preview_photo = None
 
-        self.img_frame = Frame(self)
-        self.img_frame.pack(padx=10, pady=10, expand=True, fill=tk.BOTH)
-        
-        self.label = Label(self.img_frame)
-        self.label.pack(expand=True)
+        self._build_ui()
+        self.bind("<Configure>", self._on_resize)
+        self.bind("<Control-v>", self._on_ctrl_v)
 
-        self.scale = Scale(self, from_=1, to_=16, orient=HORIZONTAL, label="Periods", command=self.update_filter)
-        self.scale.pack(padx=10, pady=10, fill=tk.X)
+    def _build_ui(self):
+        self.img_frame = ttk.Frame(self)
+        self.img_frame.pack(padx=10, pady=(10, 5), expand=True, fill=tk.BOTH)
 
-        self.load_button = Button(self, text="Load Image", command=self.load_image)
-        self.load_button.pack(pady=10, side=tk.LEFT, padx=5)
+        self.image_label = ttk.Label(self.img_frame)
+        self.image_label.pack(expand=True, fill=tk.BOTH)
 
-        self.save_button = Button(self, text="Save Filtered Image", command=self.save_image)
-        self.save_button.pack(pady=10, side=tk.LEFT, padx=5)
+        control_frame = ttk.Frame(self)
+        control_frame.pack(padx=10, pady=5, fill=tk.X)
 
-    def resize_image_to_fit(self, image):
-        target_width, target_height = 780, 440  # consider some padding
-        h, w, _ = image.shape
-        scale = min(target_width / w, target_height / h)
-        return cv2.resize(image, (int(w * scale), int(h * scale)))
+        self.period_var = tk.IntVar(value=4)
+
+        self.scale = tk.Scale(
+            control_frame,
+            from_=1,
+            to=32,
+            orient=tk.HORIZONTAL,
+            variable=self.period_var,
+            command=self.update_filter
+        )
+        self.scale.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(padx=10, pady=5, fill=tk.X)
+
+        ttk.Button(btn_frame, text="Load", command=self.load_image).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Load from Clipboard", command=self.load_from_clipboard).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Save", command=self.save_image).pack(side=tk.LEFT, padx=5)
+
+        self.status = tk.StringVar(value="No image")
+        ttk.Label(self, textvariable=self.status, relief=tk.SUNKEN).pack(side=tk.BOTTOM, fill=tk.X)
+
+    def _on_resize(self, event):
+        if self.original_image is not None:
+            self.update_preview()
+
+    def _on_ctrl_v(self, event):
+        self.load_from_clipboard()
 
     def load_image(self):
-        self.file_path = filedialog.askopenfilename(
-            title="Select an Image",
-            filetypes=[("Image Files", "*.tiff;*.jpeg;*.jpg;*.png"), ("All files", "*.*")]
+        path = filedialog.askopenfilename(
+            title="Select Image",
+            filetypes=[
+                ("Image Files",
+                 "*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.bmp;*.webp;*.jp2"),
+                ("All files", "*.*")
+            ]
         )
-        if not self.file_path:
+        if not path:
             return
 
-        self.original_image = cv2.imread(self.file_path, cv2.IMREAD_COLOR)
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            messagebox.showerror("Error", "Cannot read image")
+            return
+
+        if len(img.shape) == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+        self.original_image = img
+        self.status.set(f"Loaded: {os.path.basename(path)}")
+
+        self.update_filter()
+
+    def load_from_clipboard(self):
+        clip = ImageGrab.grabclipboard()
+
+        if clip is None:
+            messagebox.showwarning("Clipboard", "No image in clipboard")
+            return
+
+        img = np.array(clip)
+
+        if len(img.shape) == 3:
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+        self.original_image = img
+        self.status.set("Loaded from clipboard")
+
         self.update_filter()
 
     def save_image(self):
-        if self.filtered_image is None or self.file_path is None:
+        if self.filtered_image is None:
             return
 
-        directory, filename = os.path.split(self.file_path)
-        name, ext = os.path.splitext(filename)
-        save_path = os.path.join(directory, f"{name}_filtered{ext}")
+        path = filedialog.asksaveasfilename(
+            title="Save Image",
+            defaultextension=".png",
+            filetypes=[
+                ("PNG", "*.png"),
+                ("JPEG", "*.jpg;*.jpeg"),
+                ("TIFF", "*.tif;*.tiff"),
+                ("BMP", "*.bmp"),
+                ("WEBP", "*.webp"),
+                ("JPEG2000", "*.jp2"),
+                ("All files", "*.*")
+            ]
+        )
 
-        cv2.imwrite(save_path, self.filtered_image)
+        if not path:
+            return
 
-    def update_filter(self, value=None):
+        success = cv2.imwrite(path, self.filtered_image)
+
+        if not success:
+            messagebox.showerror("Error", "Failed to save image")
+
+    def update_filter(self, event=None):
         if self.original_image is None:
             return
 
-        periods = self.scale.get()
-        resized_image = self.resize_image_to_fit(self.original_image)
-        self.filtered_image = apply_filter(self.original_image, periods)
+        p = self.period_var.get()
+        self.filtered_image = apply_filter(self.original_image, p)
+        self.update_preview()
 
-        # Convert to RGB for Tkinter display
-        img_rgb = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+    def resize_to_fit(self, img):
+        fw = self.img_frame.winfo_width()
+        fh = self.img_frame.winfo_height()
 
-        # Convert to PIL Image and then to ImageTk.PhotoImage for displaying in Tkinter
-        pil_img = Image.fromarray(apply_filter(img_rgb, periods))
-        self.preview_image = ImageTk.PhotoImage(pil_img)
+        h, w = img.shape[:2]
+        scale = min(fw / w, fh / h, 1.0)
 
-        self.label.config(image=self.preview_image)
-        self.label.update()
+        return cv2.resize(img, (int(w * scale), int(h * scale)))
 
-def apply_filter(img, periods):
-    img_normalized = img / 255.0
-    img_filtered = np.sin(img_normalized * 2 * np.pi * periods) * 0.5 + 0.5
-    return (img_filtered * 255).astype(np.uint8)
+    def to_grayscale(self, img):
+        if len(img.shape) == 2:
+            return img
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    def make_side_by_side(self):
+        h = min(self.original_image.shape[0], self.filtered_image.shape[0])
+        w = min(self.original_image.shape[1], self.filtered_image.shape[1])
+
+        orig = self.original_image[:h, :w]
+        filt = self.filtered_image[:h, :w]
+
+        orig = self.to_grayscale(orig)
+        filt = self.to_grayscale(filt)
+
+        orig = cv2.cvtColor(orig, cv2.COLOR_GRAY2BGR)
+        filt = cv2.cvtColor(filt, cv2.COLOR_GRAY2BGR)
+
+        cv2.putText(orig, "Original", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(filt, "Filtered", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+        return np.hstack([orig, filt])
+
+    def update_preview(self):
+        if self.filtered_image is None:
+            return
+
+        combined = self.make_side_by_side()
+        resized = self.resize_to_fit(combined)
+
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+
+        self.preview_photo = ImageTk.PhotoImage(img)
+        self.image_label.config(image=self.preview_photo)
+
 
 if __name__ == "__main__":
-    app = SinWaveFilterApp()
+    app = ImageCheckerApp()
     app.mainloop()
